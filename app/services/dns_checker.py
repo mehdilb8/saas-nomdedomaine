@@ -168,6 +168,36 @@ class DNSChecker:
         tld = self.extract_tld(domain)
         return tld in settings.supported_tlds_list
 
+    def get_dns_server_for_tld(self, tld: str) -> str:
+        """
+        Get the appropriate DNS server for a TLD
+
+        Args:
+            tld: Top-level domain (e.g., 'fr', 'com', 'net')
+
+        Returns:
+            DNS server IP address
+
+        DNS Servers by TLD:
+            .fr  → AFNIC (192.134.4.1)
+            .com → Verisign (199.7.91.13)
+            .net → Verisign (199.7.91.13)
+            other → Google DNS (8.8.8.8)
+        """
+        tld = tld.lower()
+
+        # AFNIC DNS for .fr domains
+        if tld == "fr":
+            return "192.134.4.1"  # dns.nic.fr
+
+        # Verisign DNS for .com and .net
+        elif tld in ["com", "net"]:
+            return "199.7.91.13"  # a.gtld-servers.net
+
+        # Fallback to Google DNS
+        else:
+            return "8.8.8.8"
+
 
 # Global instance
 dns_checker = DNSChecker()

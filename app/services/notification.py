@@ -261,6 +261,117 @@ class NotificationService:
         db.add(notification)
         await db.commit()
 
+    async def send_domain_lost_notification(
+        self,
+        domain: Domain,
+        db: AsyncSession
+    ) -> NotificationResult:
+        """
+        Send Discord notification when a domain becomes unavailable
+
+        Args:
+            domain: Domain model instance
+            db: Database session
+
+        Returns:
+            NotificationResult with success status
+        """
+        logger.info(f"⚠️ Sending 'domain lost' notification for: {domain.domain}")
+
+        # Calculate time since it was available
+        time_available = ""
+        if domain.last_available:
+            delta = datetime.utcnow() - domain.last_available
+            hours = int(delta.total_seconds() / 3600)
+            minutes = int((delta.total_seconds() % 3600) / 60)
+            time_available = f"{hours}h {minutes}m"
+
+        embed = {
+            "embeds": [{
+                "title": "⚠️ Domaine perdu !",
+                "description": f"Le domaine **{domain.domain}** n'est plus disponible.",
+                "color": 16711680,  # Red (#FF0000)
+                "fields": [
+                    {
+                        "name": "📍 Domaine",
+                        "value": domain.domain,
+                        "inline": True
+                    },
+                    {
+                        "name": "🏷️ TLD",
+                        "value": domain.tld,
+                        "inline": True
+                    },
+                    {
+                        "name": "🎨 Niche",
+                        "value": domain.niche or "Non définie",
+                        "inline": True
+                    },
+                    {
+                        "name": "⏱️ Temps disponible",
+                        "value": time_available or "Inconnu",
+                        "inline": True
+                    },
+                    {
+                        "name": "📊 Traffic",
+                        "value": self._format_number(domain.traffic),
+                        "inline": True
+                    },
+                    {
+                        "name": "🔗 Referring Domains",
+                        "value": self._format_number(domain.referring_domains),
+                        "inline": True
+                    }
+                ],
+                "footer": {
+                    "text": "Domain Monitor - Watcher arrêté"
+                },
+                "timestamp": datetime.utcnow().isoformat()
+            }]
+        }
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    self.webhook_url,
+                    json=embed,
+                    timeout=10.0
+                )
+
+                if response.status_code == 204:
+                    logger.success(f"✅ 'Domain lost' notification sent for {domain.domain}")
+
+                    await self._save_notification(
+                        domain_id=domain.id,
+                        success=True,
+                        http_status=204,
+                        response="Success - Domain Lost",
+                        db=db
+                    )
+
+                    return NotificationResult(
+                        success=True,
+                        http_status=204,
+                        response="Success"
+                    )
+                else:
+                    logger.error(f"❌ Failed to send 'domain lost' notification: HTTP {response.status_code}")
+                    return NotificationResult(
+                        success=False,
+                        http_status=response.status_code,
+                        response=response.text,
+                        error=f"HTTP {response.status_code}"
+                    )
+
+        except Exception as e:
+            logger.error(f"❌ Exception sending 'domain lost' notification: {str(e)}")
+            return NotificationResult(
+                success=False,
+                http_status=None,
+                response=None,
+                error=str(e)
+            )
+
     async def send_test_notification(self) -> NotificationResult:
         """
         Send a test notification to verify webhook configuration

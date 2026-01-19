@@ -11,6 +11,7 @@ from app.config import settings
 from app.database import init_db, close_db
 from app.routers import domains
 from app.services.scheduler import scheduler_service
+from app.services.watcher import watcher_service
 
 
 # ============================================
@@ -119,6 +120,14 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 80)
     logger.info("🛑 Shutting down Domain Monitor Application")
     logger.info("=" * 80)
+
+    # Stop all watchers
+    try:
+        logger.info("👁️ Stopping all watchers...")
+        await watcher_service.stop_all_watchers()
+        logger.success("✅ All watchers stopped successfully")
+    except Exception as e:
+        logger.error(f"❌ Error stopping watchers: {str(e)}")
 
     # Stop scheduler
     try:

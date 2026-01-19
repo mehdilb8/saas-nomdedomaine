@@ -25,6 +25,7 @@ from app.services.availability import availability_service
 from app.services.notification import notification_service
 from app.services.scheduler import scheduler_service
 from app.services.dns_checker import dns_checker
+from app.services.watcher import watcher_service
 
 
 router = APIRouter(prefix="/api", tags=["domains"])
@@ -107,6 +108,9 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
     )
     notifications_today = notif_result.scalar()
 
+    # Active watchers count
+    active_watchers = watcher_service.get_active_watchers_count()
+
     return StatsResponse(
         total_domains=total_domains,
         active_domains=active_domains,
@@ -114,7 +118,8 @@ async def get_stats(db: AsyncSession = Depends(get_db)):
         by_tld=by_tld,
         last_check_cycle=last_check_cycle,
         next_check_cycle=next_check_cycle,
-        notifications_today=notifications_today
+        notifications_today=notifications_today,
+        active_watchers=active_watchers
     )
 
 
@@ -287,6 +292,47 @@ async def create_domain(
 
     logger.info(f"✅ Created new domain: {domain.domain} (ID: {domain.id})")
 
+    # IMMEDIATE CHECK upon domain creation
+    logger.info(f"🔍 Starting immediate check for new domain: {domain.domain}")
+
+    try:
+        # Get appropriate DNS server for TLD
+        dns_server = dns_checker.get_dns_server_for_tld(tld)
+
+        # Check availability
+        check_result = await dns_checker.check_domain_availability(
+            domain.domain,
+            dns_server
+        )
+
+        # Update domain status
+        if check_result.available:
+            logger.success(f"🎯 Domain {domain.domain} is AVAILABLE!")
+
+            domain.status = DomainStatus.AVAILABLE
+            domain.previous_status = DomainStatus.UNKNOWN
+            domain.last_checked = datetime.utcnow()
+            domain.last_available = datetime.utcnow()
+            await db.commit()
+
+            # Send Discord notification
+            await notification_service.send_discord_notification(domain, db)
+
+            # START WATCHER (checks every 2 seconds)
+            await watcher_service.start_watcher(domain.id, domain.domain)
+            logger.success(f"👁️ Watcher started for {domain.domain} - checking every 2 seconds")
+
+        else:
+            logger.info(f"❌ Domain {domain.domain} is UNAVAILABLE")
+            domain.status = DomainStatus.UNAVAILABLE
+            domain.previous_status = DomainStatus.UNKNOWN
+            domain.last_checked = datetime.utcnow()
+            await db.commit()
+
+    except Exception as e:
+        logger.error(f"Error during immediate check: {str(e)}")
+
+    await db.refresh(domain)
     return DomainResponse.model_validate(domain)
 
 

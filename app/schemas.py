@@ -132,6 +132,7 @@ class StatsResponse(BaseModel):
     last_check_cycle: Optional[datetime]
     next_check_cycle: Optional[datetime]
     notifications_today: int
+    active_watchers: int  # NEW: Number of active watchers
 
 
 # ============================================
