@@ -1,0 +1,1564 @@
+# 🎯 PROMPT COMPLET - SaaS Monitoring Domaines Expirés
+
+## INSTRUCTIONS GÉNÉRALES POUR CLAUDE CODE
+
+Tu es un développeur senior Python/FastAPI. Tu dois développer une application complète de monitoring de domaines expirés, de A à Z, prête pour la production et déployée avec Docker.
+
+### Règles de travail OBLIGATOIRES
+
+1. **Travail étape par étape** : Tu dois suivre les phases et sous-tâches dans l'ordre exact
+2. **Validation systématique** : Après chaque sous-tâche, afficher la checklist mise à jour
+3. **Pas de saut d'étape** : Ne jamais passer à la phase suivante sans avoir validé toutes les sous-tâches de la phase actuelle
+4. **Tests intermédiaires** : Tester chaque composant avant de passer au suivant
+5. **Commits réguliers** : Faire un commit Git à la fin de chaque phase validée
+
+### Format de mise à jour de la checklist
+
+Après chaque sous-tâche complétée, afficher :
+
+```
+✅ SOUS-TÂCHE COMPLÉTÉE : [nom de la sous-tâche]
+
+📋 CHECKLIST MISE À JOUR :
+==========================
+PHASE 1 : Setup & Infrastructure [X/14]
+  [x] 1.1 - Créer structure dossiers
+  [x] 1.2 - Initialiser Git
+  [ ] 1.3 - Créer requirements.txt
+  ...
+
+PROGRESSION GLOBALE : X/89 tâches (XX%)
+```
+
+---
+
+# SECTION 1 : CONTEXTE DU PROJET
+
+## 1.1 Description fonctionnelle
+
+Application SaaS personnelle pour :
+- Surveiller la disponibilité de noms de domaine expirés
+- Recevoir des notifications Discord quand ils deviennent disponibles à l'achat
+- Gérer une liste de domaines à surveiller via API REST
+
+## 1.2 Environnement de déploiement
+
+| Paramètre | Valeur |
+|-----------|--------|
+| Serveur | VPS OVH |
+| Ressources | 8 vCores, 24 Go RAM, 200 Go SSD NVMe |
+| OS | Ubuntu 22.04+ |
+| Déploiement | Docker + Docker Compose |
+| Port application | 3010 |
+| Port phpMyAdmin | 8083 |
+| Port MySQL | 3307 (interne Docker, pas exposé publiquement) |
+| Ports occupés (ne pas utiliser) | 22, 3306, 5000, 5001, 5432, 6379, 8000, 8082 |
+
+## 1.3 Spécifications fonctionnelles détaillées
+
+### Entrées utilisateur par domaine
+
+| Champ | Type | Requis | Description |
+|-------|------|--------|-------------|
+| domain | string | ✅ | Nom de domaine complet (ex: example.fr) |
+| niche | string | ❌ | Thématique ou vertical du domaine |
+| traffic | integer | ❌ | Estimation du trafic historique |
+| referring_domains | integer | ❌ | Nombre de Referring Domains (RD) |
+
+### Règles métier
+
+1. **Vérification DNS** : Déterminer si un domaine est disponible via requête DNS
+2. **Double vérification** : Si disponible → attendre 5 secondes → re-vérifier avec serveur DNS différent
+3. **Anti-spam notifications** : Ne PAS notifier si le domaine était déjà disponible au check précédent
+4. **Fréquence** : Vérification automatique toutes les 2 heures
+5. **Extensions supportées** : .fr, .com, .net (extensible)
+
+### Logique de détection DNS
+
+| Réponse DNS | Interprétation | Action |
+|-------------|----------------|--------|
+| NXDOMAIN | Domaine disponible | Double vérification |
+| SERVFAIL (après retries) | Probablement disponible | Double vérification |
+| Timeout (après retries) | Incertain | Retry, puis skip |
+| Réponse avec IP | Non disponible | Marquer unavailable |
+
+### Notifications Discord
+
+- **Déclencheur** : Uniquement sur transition `unavailable` → `available`
+- **Format** : Embed Discord riche avec couleur verte
+- **Contenu** : Domaine, TLD, niche, traffic, RD, timestamp
+
+---
+
+# SECTION 2 : STACK TECHNIQUE
+
+## 2.1 Technologies imposées
+
+| Composant | Technologie | Version | Justification |
+|-----------|-------------|---------|---------------|
+| Runtime | Python | 3.12 | Performance, écosystème riche |
+| Framework API | FastAPI | ≥0.109 | Async natif, auto-doc, rapide |
+| ORM | SQLAlchemy | ≥2.0 | Standard Python, async support |
+| Base de données | MySQL | 8.0 | Robuste, performant, standard |
+| Admin BDD | phpMyAdmin | latest | Interface web pour gérer MySQL |
+| Scheduler | APScheduler | ≥3.10 | Robuste, async, in-process |
+| DNS | dnspython | ≥2.5 | Librairie de référence Python |
+| HTTP Client | httpx | ≥0.26 | Async, moderne |
+| Validation | Pydantic | v2 | Intégré FastAPI, type-safe |
+| Logs | Loguru | ≥0.7 | Simple, rotation auto, formatage élégant |
+| Tests | Pytest | ≥8.0 | Standard Python |
+| Conteneurisation | Docker | latest | Isolation, déploiement simplifié |
+
+## 2.2 Dépendances complètes (requirements.txt)
+
+```
+# Core
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# Database MySQL
+sqlalchemy>=2.0.0
+aiomysql>=0.2.0
+pymysql>=1.1.0
+cryptography>=42.0.0
+
+# DNS
+dnspython>=2.5.0
+
+# HTTP
+httpx>=0.26.0
+
+# Scheduler
+apscheduler>=3.10.0
+
+# Logging
+loguru>=0.7.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+
+# Dev
+black>=24.0.0
+isort>=5.13.0
+```
+
+---
+
+# SECTION 3 : ARCHITECTURE
+
+## 3.1 Structure des fichiers
+
+```
+saas-nomdedomaine/
+│
+├── app/
+│   ├── __init__.py
+│   ├── main.py                      # Point d'entrée FastAPI
+│   ├── config.py                    # Configuration Pydantic Settings
+│   ├── database.py                  # Connexion MySQL async
+│   ├── models.py                    # Modèles SQLAlchemy
+│   ├── schemas.py                   # Schémas Pydantic (validation)
+│   │
+│   ├── services/
+│   │   ├── __init__.py
+│   │   ├── dns_checker.py           # Vérification DNS async
+│   │   ├── availability.py          # Orchestration vérification
+│   │   ├── notification.py          # Envoi Discord webhook
+│   │   └── scheduler.py             # Configuration APScheduler
+│   │
+│   └── routers/
+│       ├── __init__.py
+│       └── domains.py               # Routes API domaines
+│
+├── tests/
+│   ├── __init__.py
+│   ├── conftest.py                  # Fixtures pytest
+│   ├── test_dns_checker.py
+│   ├── test_availability.py
+│   └── test_api.py
+│
+├── mysql_data/
+│   └── .gitkeep                     # Dossier MySQL (volume Docker)
+│
+├── logs/
+│   └── .gitkeep                     # Dossier logs (volume Docker)
+│
+├── docker/
+│   └── Dockerfile
+│
+├── scripts/
+│   ├── init.sql                     # Script d'initialisation MySQL
+│   └── seed.py                      # Script pour données de test
+│
+├── docker-compose.yml
+├── requirements.txt
+├── .env.example
+├── .env                             # (gitignored)
+├── .gitignore
+├── README.md
+└── DEPLOYMENT.md
+```
+
+## 3.2 Architecture Docker (3 services)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     DOCKER COMPOSE                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────┐    ┌─────────────┐    ┌─────────────────────┐  │
+│  │    APP      │    │   MySQL     │    │    phpMyAdmin       │  │
+│  │  FastAPI    │───▶│    8.0      │◀───│                     │  │
+│  │  Port 3010  │    │  Port 3307  │    │    Port 8083        │  │
+│  └─────────────┘    └─────────────┘    └─────────────────────┘  │
+│        │                   │                     │               │
+│        ▼                   ▼                     ▼               │
+│   ./logs:/app/logs   mysql_data:/var/lib/mysql   (stateless)    │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 3.3 Schéma de base de données MySQL
+
+### Table : domains
+
+```sql
+CREATE TABLE domains (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    domain VARCHAR(255) NOT NULL UNIQUE,
+    tld VARCHAR(10) NOT NULL,
+    niche VARCHAR(100) NULL,
+    traffic INT DEFAULT 0,
+    referring_domains INT DEFAULT 0,
+    status ENUM('available', 'unavailable', 'unknown') DEFAULT 'unknown',
+    previous_status ENUM('available', 'unavailable', 'unknown') DEFAULT 'unknown',
+    last_checked DATETIME NULL,
+    last_available DATETIME NULL,
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX idx_is_active (is_active),
+    INDEX idx_status (status),
+    INDEX idx_tld (tld)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+### Table : check_logs
+
+```sql
+CREATE TABLE check_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    domain_id INT NOT NULL,
+    status_found ENUM('available', 'unavailable', 'error') NOT NULL,
+    check_method VARCHAR(20) NOT NULL,
+    response_time_ms INT NULL,
+    error_message TEXT NULL,
+    notification_sent BOOLEAN DEFAULT FALSE,
+    checked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX idx_domain_id (domain_id),
+    INDEX idx_checked_at (checked_at),
+    
+    FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+### Table : notifications
+
+```sql
+CREATE TABLE notifications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    domain_id INT NOT NULL,
+    webhook_response TEXT NULL,
+    http_status INT NULL,
+    success BOOLEAN DEFAULT FALSE,
+    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX idx_domain_id (domain_id),
+    
+    FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+```
+
+### Script d'initialisation complet (scripts/init.sql)
+
+```sql
+-- ============================================
+-- DOMAIN MONITOR - INITIALISATION BASE DE DONNÉES
+-- ============================================
+
+-- Création de la base de données (si pas déjà créée par Docker)
+CREATE DATABASE IF NOT EXISTS domain_monitor
+    CHARACTER SET utf8mb4
+    COLLATE utf8mb4_unicode_ci;
+
+USE domain_monitor;
+
+-- ============================================
+-- TABLE: domains
+-- ============================================
+CREATE TABLE IF NOT EXISTS domains (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    domain VARCHAR(255) NOT NULL UNIQUE COMMENT 'Nom de domaine complet (ex: example.fr)',
+    tld VARCHAR(10) NOT NULL COMMENT 'Extension du domaine (.fr, .com, .net)',
+    niche VARCHAR(100) NULL COMMENT 'Thématique du domaine',
+    traffic INT DEFAULT 0 COMMENT 'Estimation du trafic mensuel',
+    referring_domains INT DEFAULT 0 COMMENT 'Nombre de referring domains (backlinks)',
+    status ENUM('available', 'unavailable', 'unknown') DEFAULT 'unknown' COMMENT 'Statut actuel',
+    previous_status ENUM('available', 'unavailable', 'unknown') DEFAULT 'unknown' COMMENT 'Statut précédent (pour détecter les transitions)',
+    last_checked DATETIME NULL COMMENT 'Date de dernière vérification',
+    last_available DATETIME NULL COMMENT 'Date de dernière disponibilité détectée',
+    is_active BOOLEAN DEFAULT TRUE COMMENT 'Monitoring actif/inactif',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    
+    INDEX idx_is_active (is_active),
+    INDEX idx_status (status),
+    INDEX idx_tld (tld),
+    INDEX idx_last_checked (last_checked)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- TABLE: check_logs
+-- ============================================
+CREATE TABLE IF NOT EXISTS check_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    domain_id INT NOT NULL,
+    status_found ENUM('available', 'unavailable', 'error') NOT NULL COMMENT 'Résultat de la vérification',
+    check_method VARCHAR(20) NOT NULL COMMENT 'Méthode utilisée (dns_primary, dns_secondary)',
+    response_time_ms INT NULL COMMENT 'Temps de réponse en millisecondes',
+    error_message TEXT NULL COMMENT 'Message d erreur si applicable',
+    notification_sent BOOLEAN DEFAULT FALSE COMMENT 'Notification Discord envoyée',
+    checked_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX idx_domain_id (domain_id),
+    INDEX idx_checked_at (checked_at),
+    INDEX idx_status_found (status_found),
+    
+    FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- TABLE: notifications
+-- ============================================
+CREATE TABLE IF NOT EXISTS notifications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    domain_id INT NOT NULL,
+    webhook_response TEXT NULL COMMENT 'Réponse brute du webhook Discord',
+    http_status INT NULL COMMENT 'Code HTTP retourné',
+    success BOOLEAN DEFAULT FALSE COMMENT 'Envoi réussi ou non',
+    sent_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    INDEX idx_domain_id (domain_id),
+    INDEX idx_sent_at (sent_at),
+    INDEX idx_success (success),
+    
+    FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- PROCÉDURE: Nettoyage des vieux logs (> 30 jours)
+-- ============================================
+DELIMITER //
+CREATE PROCEDURE IF NOT EXISTS cleanup_old_logs()
+BEGIN
+    DELETE FROM check_logs WHERE checked_at < DATE_SUB(NOW(), INTERVAL 30 DAY);
+    DELETE FROM notifications WHERE sent_at < DATE_SUB(NOW(), INTERVAL 90 DAY);
+END //
+DELIMITER ;
+
+-- ============================================
+-- EVENT: Nettoyage automatique quotidien
+-- ============================================
+SET GLOBAL event_scheduler = ON;
+
+CREATE EVENT IF NOT EXISTS daily_cleanup
+ON SCHEDULE EVERY 1 DAY
+STARTS CURRENT_TIMESTAMP
+DO CALL cleanup_old_logs();
+```
+
+## 3.4 Endpoints API REST
+
+### Endpoints de santé et statistiques
+
+| Méthode | Endpoint | Description | Réponse |
+|---------|----------|-------------|---------|
+| GET | /api/health | Health check Docker | `{"status": "healthy", "database": "connected", "timestamp": "..."}` |
+| GET | /api/stats | Statistiques globales | Voir détail ci-dessous |
+
+#### Réponse GET /api/stats
+
+```json
+{
+  "total_domains": 150,
+  "active_domains": 145,
+  "by_status": {
+    "available": 12,
+    "unavailable": 130,
+    "unknown": 8
+  },
+  "by_tld": {
+    "fr": 80,
+    "com": 50,
+    "net": 20
+  },
+  "last_check_cycle": "2025-01-19T14:00:00Z",
+  "next_check_cycle": "2025-01-19T16:00:00Z",
+  "notifications_today": 3
+}
+```
+
+### Endpoints CRUD domaines
+
+| Méthode | Endpoint | Description |
+|---------|----------|-------------|
+| GET | /api/domains | Lister tous les domaines (avec pagination et filtres) |
+| GET | /api/domains/{id} | Détails d'un domaine + 10 derniers checks |
+| POST | /api/domains | Ajouter un nouveau domaine |
+| PUT | /api/domains/{id} | Modifier un domaine existant |
+| DELETE | /api/domains/{id} | Supprimer un domaine |
+| POST | /api/domains/{id}/check | Forcer vérification immédiate |
+| PATCH | /api/domains/{id}/toggle | Activer/désactiver monitoring |
+
+### Paramètres GET /api/domains
+
+| Paramètre | Type | Description |
+|-----------|------|-------------|
+| status | string | Filtrer par status (available, unavailable, unknown) |
+| tld | string | Filtrer par extension (fr, com, net) |
+| is_active | boolean | Filtrer par état monitoring |
+| search | string | Recherche dans le nom de domaine |
+| limit | integer | Nombre de résultats (default: 50, max: 200) |
+| offset | integer | Pagination offset (default: 0) |
+| sort_by | string | Champ de tri (created_at, last_checked, domain) |
+| sort_order | string | Ordre de tri (asc, desc) |
+
+### Schémas Pydantic
+
+#### DomainCreate (POST /api/domains)
+
+```python
+{
+  "domain": "example.fr",           # requis, regex validé
+  "niche": "Tech",                  # optionnel, max 100 chars
+  "traffic": 5000,                  # optionnel, >= 0
+  "referring_domains": 150          # optionnel, >= 0
+}
+```
+
+#### DomainUpdate (PUT /api/domains/{id})
+
+```python
+{
+  "niche": "Finance",               # optionnel
+  "traffic": 8000,                  # optionnel
+  "referring_domains": 200          # optionnel
+}
+```
+
+#### DomainResponse
+
+```python
+{
+  "id": 1,
+  "domain": "example.fr",
+  "tld": "fr",
+  "niche": "Tech",
+  "traffic": 5000,
+  "referring_domains": 150,
+  "status": "unavailable",
+  "previous_status": "unknown",
+  "last_checked": "2025-01-19T14:30:00Z",
+  "last_available": null,
+  "is_active": true,
+  "created_at": "2025-01-19T10:00:00Z",
+  "updated_at": "2025-01-19T14:30:00Z"
+}
+```
+
+## 3.5 Configuration environnement
+
+### Fichier .env.example
+
+```bash
+# ===================================
+# APPLICATION
+# ===================================
+APP_NAME=domain-monitor
+APP_ENV=production
+APP_DEBUG=false
+APP_HOST=0.0.0.0
+APP_PORT=3010
+
+# ===================================
+# DATABASE MYSQL
+# ===================================
+MYSQL_HOST=mysql
+MYSQL_PORT=3306
+MYSQL_DATABASE=domain_monitor
+MYSQL_USER=domain_user
+MYSQL_PASSWORD=your_secure_password_here
+MYSQL_ROOT_PASSWORD=your_root_password_here
+
+# URL de connexion (construite automatiquement)
+DATABASE_URL=mysql+aiomysql://${MYSQL_USER}:${MYSQL_PASSWORD}@${MYSQL_HOST}:${MYSQL_PORT}/${MYSQL_DATABASE}
+
+# ===================================
+# PHPMYADMIN
+# ===================================
+PMA_HOST=mysql
+PMA_PORT=3306
+
+# ===================================
+# LOGGING
+# ===================================
+LOG_LEVEL=INFO
+LOG_PATH=./logs
+LOG_ROTATION=10 MB
+LOG_RETENTION=30 days
+
+# ===================================
+# DISCORD
+# ===================================
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/YOUR_WEBHOOK_ID/YOUR_WEBHOOK_TOKEN
+DISCORD_RETRY_COUNT=3
+DISCORD_RETRY_DELAY=2
+
+# ===================================
+# SCHEDULER
+# ===================================
+CHECK_INTERVAL_HOURS=2
+BATCH_SIZE=50
+DELAY_BETWEEN_CHECKS_MS=100
+DOUBLE_CHECK_DELAY_SECONDS=5
+
+# ===================================
+# DNS
+# ===================================
+DNS_TIMEOUT_SECONDS=5
+DNS_RETRY_COUNT=2
+DNS_PRIMARY_SERVER=8.8.8.8
+DNS_SECONDARY_SERVER=1.1.1.1
+
+# ===================================
+# SUPPORTED TLDs
+# ===================================
+SUPPORTED_TLDS=fr,com,net
+```
+
+---
+
+# SECTION 4 : LOGIQUE MÉTIER DÉTAILLÉE
+
+## 4.1 Service DNS Checker
+
+### Fonction check_domain_availability(domain: str, dns_server: str) -> CheckResult
+
+```
+ENTRÉE: domain (str), dns_server (str)
+SORTIE: CheckResult(available: bool, method: str, response_time_ms: int, error: str|None)
+
+ALGORITHME:
+1. Créer resolver DNS avec timeout configuré
+2. Configurer le serveur DNS spécifié
+3. TRY (max DNS_RETRY_COUNT tentatives):
+   a. Démarrer chronomètre
+   b. Résoudre le domaine (type A)
+   c. Arrêter chronomètre
+   d. SI réponse contient des IP:
+      - RETOURNER CheckResult(available=False, ...)
+4. CATCH NXDOMAIN:
+   - RETOURNER CheckResult(available=True, ...)
+5. CATCH (Timeout, NoNameservers, SERVFAIL):
+   - SI tentatives restantes > 0: RETRY
+   - SINON: RETOURNER CheckResult(available=True, error="timeout/servfail")
+6. CATCH Exception:
+   - Logger l'erreur
+   - RETOURNER CheckResult(available=None, error=str(exception))
+```
+
+## 4.2 Service Availability
+
+### Fonction verify_domain(domain: Domain) -> VerificationResult
+
+```
+ENTRÉE: domain (Domain model)
+SORTIE: VerificationResult(is_available: bool, should_notify: bool, check_logs: list)
+
+ALGORITHME:
+1. Sauvegarder previous_status = domain.status
+
+2. PREMIÈRE VÉRIFICATION (DNS primaire):
+   a. result1 = check_domain_availability(domain.domain, DNS_PRIMARY_SERVER)
+   b. Logger le résultat
+   c. SI result1.available == False:
+      - Mettre à jour domain.status = "unavailable"
+      - RETOURNER VerificationResult(is_available=False, should_notify=False)
+
+3. SI result1.available == True:
+   a. Attendre DOUBLE_CHECK_DELAY_SECONDS (5 secondes)
+   
+   b. DEUXIÈME VÉRIFICATION (DNS secondaire):
+      - result2 = check_domain_availability(domain.domain, DNS_SECONDARY_SERVER)
+      - Logger le résultat
+   
+   c. SI result2.available == True:
+      - Mettre à jour domain.status = "available"
+      - Mettre à jour domain.last_available = now()
+      
+      - DÉTERMINER SI NOTIFICATION NÉCESSAIRE:
+        * SI previous_status != "available":
+          → should_notify = True (TRANSITION DÉTECTÉE)
+        * SINON:
+          → should_notify = False (ANTI-SPAM)
+      
+      - RETOURNER VerificationResult(is_available=True, should_notify=should_notify)
+   
+   d. SI result2.available == False:
+      - Mettre à jour domain.status = "unavailable"
+      - RETOURNER VerificationResult(is_available=False, should_notify=False)
+
+4. Mettre à jour domain.last_checked = now()
+5. Mettre à jour domain.previous_status = previous_status
+6. Sauvegarder en base de données
+```
+
+## 4.3 Service Notification
+
+### Fonction send_discord_notification(domain: Domain) -> NotificationResult
+
+```
+ENTRÉE: domain (Domain model)
+SORTIE: NotificationResult(success: bool, http_status: int, response: str)
+
+ALGORITHME:
+1. Construire l'embed Discord:
+   {
+     "embeds": [{
+       "title": "🎯 Domaine disponible !",
+       "color": 65280,  # Vert (#00FF00)
+       "fields": [
+         {"name": "📍 Domaine", "value": domain.domain, "inline": true},
+         {"name": "🏷️ TLD", "value": domain.tld, "inline": true},
+         {"name": "📂 Niche", "value": domain.niche or "Non définie", "inline": true},
+         {"name": "📊 Traffic", "value": format_number(domain.traffic), "inline": true},
+         {"name": "🔗 Referring Domains", "value": format_number(domain.referring_domains), "inline": true}
+       ],
+       "footer": {"text": "Domain Monitor"},
+       "timestamp": datetime.utcnow().isoformat()
+     }]
+   }
+
+2. POUR i DE 1 À DISCORD_RETRY_COUNT:
+   a. TRY:
+      - response = httpx.post(DISCORD_WEBHOOK_URL, json=embed, timeout=10)
+      - SI response.status_code == 204:
+        * Logger succès
+        * Enregistrer en base (notifications)
+        * RETOURNER NotificationResult(success=True, http_status=204)
+      - SI response.status_code == 429 (rate limit):
+        * Attendre retry_after secondes
+        * CONTINUER
+   b. CATCH Exception:
+      - Logger erreur
+      - Attendre DISCORD_RETRY_DELAY * i secondes
+      - CONTINUER
+
+3. Logger échec total
+4. RETOURNER NotificationResult(success=False, ...)
+```
+
+## 4.4 Service Scheduler
+
+### Fonction run_check_cycle()
+
+```
+ALGORITHME:
+1. Logger "🚀 Début du cycle de vérification"
+2. Récupérer start_time = now()
+
+3. Récupérer tous les domaines actifs:
+   domains = SELECT * FROM domains WHERE is_active = TRUE
+
+4. Initialiser compteurs:
+   - total = len(domains)
+   - checked = 0
+   - available_count = 0
+   - notifications_sent = 0
+
+5. Diviser en batches de BATCH_SIZE domaines
+
+6. POUR chaque batch:
+   POUR chaque domain dans batch:
+     a. result = verify_domain(domain)
+     b. checked += 1
+     
+     c. SI result.is_available:
+        available_count += 1
+        
+        SI result.should_notify:
+          notif_result = send_discord_notification(domain)
+          SI notif_result.success:
+            notifications_sent += 1
+     
+     d. Créer check_log en base de données
+     
+     e. Attendre DELAY_BETWEEN_CHECKS_MS millisecondes
+
+7. Calculer duration = now() - start_time
+
+8. Logger résumé:
+   "✅ Cycle terminé en {duration}s"
+   "📊 {checked}/{total} domaines vérifiés"
+   "🟢 {available_count} disponibles"
+   "📨 {notifications_sent} notifications envoyées"
+
+9. Appeler la procédure MySQL cleanup_old_logs() si besoin
+```
+
+### Configuration APScheduler
+
+```python
+scheduler = AsyncIOScheduler(timezone="Europe/Paris")
+
+scheduler.add_job(
+    run_check_cycle,
+    trigger=IntervalTrigger(hours=CHECK_INTERVAL_HOURS),
+    id="domain_check_cycle",
+    name="Vérification des domaines",
+    replace_existing=True,
+    max_instances=1,  # Éviter les exécutions parallèles
+    coalesce=True     # Fusionner les jobs manqués
+)
+```
+
+---
+
+# SECTION 5 : DOCKER
+
+## 5.1 Dockerfile (app)
+
+```dockerfile
+# ================================
+# Stage 1: Builder
+# ================================
+FROM python:3.12-slim as builder
+
+WORKDIR /build
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    default-libmysqlclient-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip wheel --no-cache-dir --no-deps --wheel-dir /build/wheels -r requirements.txt
+
+# ================================
+# Stage 2: Production
+# ================================
+FROM python:3.12-slim as production
+
+# Create non-root user
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+
+WORKDIR /app
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    default-libmysqlclient-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy wheels from builder
+COPY --from=builder /build/wheels /wheels
+RUN pip install --no-cache-dir /wheels/* && rm -rf /wheels
+
+# Copy application code
+COPY app/ ./app/
+
+# Create directories for volumes
+RUN mkdir -p /app/logs && \
+    chown -R appuser:appgroup /app
+
+# Switch to non-root user
+USER appuser
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    APP_HOST=0.0.0.0 \
+    APP_PORT=3010
+
+# Expose port
+EXPOSE 3010
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:3010/api/health || exit 1
+
+# Start application
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "3010"]
+```
+
+## 5.2 docker-compose.yml
+
+```yaml
+version: '3.8'
+
+services:
+  # ================================
+  # APPLICATION FASTAPI
+  # ================================
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: domain-monitor-app
+    restart: unless-stopped
+    ports:
+      - "3010:3010"
+    volumes:
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - TZ=Europe/Paris
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3010/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - domain-monitor-network
+
+  # ================================
+  # BASE DE DONNÉES MYSQL
+  # ================================
+  mysql:
+    image: mysql:8.0
+    container_name: domain-monitor-mysql
+    restart: unless-stopped
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Europe/Paris
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --event-scheduler=ON
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - domain-monitor-network
+
+  # ================================
+  # PHPMYADMIN
+  # ================================
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: domain-monitor-phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "8083:80"
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: root
+      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      UPLOAD_LIMIT: 50M
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - domain-monitor-network
+
+# ================================
+# VOLUMES
+# ================================
+volumes:
+  mysql_data:
+    name: domain-monitor-mysql-data
+
+# ================================
+# NETWORKS
+# ================================
+networks:
+  domain-monitor-network:
+    name: domain-monitor-network
+    driver: bridge
+```
+
+## 5.3 .dockerignore
+
+```
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+.Python
+*.so
+.venv
+venv
+ENV
+
+# Testing
+.pytest_cache
+.coverage
+htmlcov
+.tox
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/*.log
+
+# MySQL data (managed by Docker volume)
+mysql_data/
+
+# Documentation
+*.md
+!README.md
+
+# Docker
+Dockerfile
+docker-compose*.yml
+
+# Misc
+.DS_Store
+Thumbs.db
+```
+
+---
+
+# SECTION 6 : CHECKLIST DE DÉVELOPPEMENT
+
+## MASTER CHECKLIST
+
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                    CHECKLIST DÉVELOPPEMENT - DOMAIN MONITOR                   ║
+╠══════════════════════════════════════════════════════════════════════════════╣
+║ Progression globale : [ ] 0/89 tâches (0%)                                   ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 1 : SETUP & INFRASTRUCTURE                              [0/15] ⬜      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 1.1   Créer le dossier racine 'saas-nomdedomaine'                        │
+│ [ ] 1.2   Créer la structure complète des dossiers (app/, tests/, etc.)      │
+│ [ ] 1.3   Initialiser Git (git init)                                         │
+│ [ ] 1.4   Créer le fichier .gitignore complet                                │
+│ [ ] 1.5   Créer le fichier requirements.txt                                  │
+│ [ ] 1.6   Créer le fichier .env.example                                      │
+│ [ ] 1.7   Créer le fichier .env (copie de .env.example avec vraies valeurs)  │
+│ [ ] 1.8   Créer app/__init__.py                                              │
+│ [ ] 1.9   Créer app/config.py (Pydantic Settings)                            │
+│ [ ] 1.10  Créer les fichiers .gitkeep dans mysql_data/ et logs/              │
+│ [ ] 1.11  Créer scripts/init.sql (initialisation MySQL)                      │
+│ [ ] 1.12  Créer docker/Dockerfile                                            │
+│ [ ] 1.13  Créer docker-compose.yml (app + mysql + phpmyadmin)                │
+│ [ ] 1.14  Créer .dockerignore                                                │
+│ [ ] 1.15  COMMIT: "chore: initial project setup with MySQL"                  │
+│                                                                              │
+│ ✓ Critères de validation Phase 1:                                            │
+│   - Structure de dossiers complète                                           │
+│   - docker compose config valide (pas d'erreur)                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 2 : BASE DE DONNÉES MYSQL                               [0/10] ⬜      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 2.1   Créer app/database.py (connexion async MySQL avec aiomysql)        │
+│ [ ] 2.2   Créer app/models.py - modèle Domain                                │
+│ [ ] 2.3   Créer app/models.py - modèle CheckLog                              │
+│ [ ] 2.4   Créer app/models.py - modèle Notification                          │
+│ [ ] 2.5   Vérifier les index dans les modèles SQLAlchemy                     │
+│ [ ] 2.6   Créer app/schemas.py - DomainCreate, DomainUpdate                  │
+│ [ ] 2.7   Créer app/schemas.py - DomainResponse, DomainList                  │
+│ [ ] 2.8   Créer app/schemas.py - CheckLogResponse, StatsResponse             │
+│ [ ] 2.9   Démarrer MySQL avec docker compose up mysql -d et vérifier phpMyAdmin │
+│ [ ] 2.10  COMMIT: "feat: database models and schemas for MySQL"              │
+│                                                                              │
+│ ✓ Critères de validation Phase 2:                                            │
+│   - MySQL démarre sans erreur                                                │
+│   - phpMyAdmin accessible sur http://localhost:8083                          │
+│   - Les 3 tables sont créées dans la base domain_monitor                     │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 3 : SERVICE DNS CHECKER                                 [0/8] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 3.1   Créer app/services/__init__.py                                     │
+│ [ ] 3.2   Créer app/services/dns_checker.py - structure de base              │
+│ [ ] 3.3   Implémenter check_domain_availability()                            │
+│ [ ] 3.4   Implémenter la gestion NXDOMAIN (domaine disponible)               │
+│ [ ] 3.5   Implémenter la gestion timeout et retry                            │
+│ [ ] 3.6   Implémenter la gestion multi-TLD (.fr, .com, .net)                 │
+│ [ ] 3.7   Ajouter les logs Loguru dans le service                            │
+│ [ ] 3.8   COMMIT: "feat: DNS checker service"                                │
+│                                                                              │
+│ ✓ Critères de validation Phase 3:                                            │
+│   - Test manuel: domaine existant (google.com) → unavailable                 │
+│   - Test manuel: domaine inexistant (xyzabc123456.com) → available           │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 4 : SERVICE AVAILABILITY                                [0/7] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 4.1   Créer app/services/availability.py - structure de base             │
+│ [ ] 4.2   Implémenter verify_domain() - première vérification                │
+│ [ ] 4.3   Implémenter la double vérification (délai 5s + DNS secondaire)     │
+│ [ ] 4.4   Implémenter la détection de transition (previous_status)           │
+│ [ ] 4.5   Implémenter la logique anti-spam (should_notify)                   │
+│ [ ] 4.6   Implémenter la mise à jour en base de données MySQL                │
+│ [ ] 4.7   COMMIT: "feat: availability verification service"                  │
+│                                                                              │
+│ ✓ Critères de validation Phase 4:                                            │
+│   - Double vérification fonctionne                                           │
+│   - Transition détectée correctement                                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 5 : SERVICE NOTIFICATION DISCORD                        [0/8] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 5.1   Créer app/services/notification.py - structure de base             │
+│ [ ] 5.2   Implémenter build_discord_embed() - construction du message        │
+│ [ ] 5.3   Implémenter send_discord_notification() - envoi HTTP               │
+│ [ ] 5.4   Implémenter le retry avec backoff exponentiel                      │
+│ [ ] 5.5   Implémenter la gestion du rate limit Discord (429)                 │
+│ [ ] 5.6   Implémenter l'enregistrement en base (table notifications)         │
+│ [ ] 5.7   Ajouter fonction de test send_test_notification()                  │
+│ [ ] 5.8   COMMIT: "feat: Discord notification service"                       │
+│                                                                              │
+│ ✓ Critères de validation Phase 5:                                            │
+│   - Notification de test reçue sur Discord                                   │
+│   - Embed formaté correctement avec tous les champs                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 6 : SERVICE SCHEDULER                                   [0/9] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 6.1   Créer app/services/scheduler.py - structure de base                │
+│ [ ] 6.2   Configurer APScheduler (AsyncIOScheduler)                          │
+│ [ ] 6.3   Implémenter run_check_cycle() - boucle principale                  │
+│ [ ] 6.4   Implémenter le traitement par batch (BATCH_SIZE)                   │
+│ [ ] 6.5   Implémenter le délai entre chaque domaine                          │
+│ [ ] 6.6   Implémenter les logs de début/fin de cycle avec stats              │
+│ [ ] 6.7   Implémenter l'appel à la procédure MySQL cleanup_old_logs()        │
+│ [ ] 6.8   Ajouter fonctions start_scheduler() et shutdown_scheduler()        │
+│ [ ] 6.9   COMMIT: "feat: APScheduler job configuration"                      │
+│                                                                              │
+│ ✓ Critères de validation Phase 6:                                            │
+│   - Le scheduler démarre sans erreur                                         │
+│   - Les logs montrent le cycle de vérification                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 7 : API REST - ROUTES                                   [0/14] ⬜      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 7.1   Créer app/routers/__init__.py                                      │
+│ [ ] 7.2   Créer app/routers/domains.py - structure de base                   │
+│ [ ] 7.3   Implémenter GET /api/health (avec check connexion MySQL)           │
+│ [ ] 7.4   Implémenter GET /api/stats                                         │
+│ [ ] 7.5   Implémenter GET /api/domains (liste avec filtres et pagination)    │
+│ [ ] 7.6   Implémenter GET /api/domains/{id} (détails + derniers checks)      │
+│ [ ] 7.7   Implémenter POST /api/domains (création avec validation)           │
+│ [ ] 7.8   Implémenter PUT /api/domains/{id} (modification)                   │
+│ [ ] 7.9   Implémenter DELETE /api/domains/{id} (suppression)                 │
+│ [ ] 7.10  Implémenter POST /api/domains/{id}/check (forcer vérification)     │
+│ [ ] 7.11  Implémenter PATCH /api/domains/{id}/toggle (activer/désactiver)    │
+│ [ ] 7.12  Ajouter la validation TLD supportés                                │
+│ [ ] 7.13  Ajouter la gestion des erreurs (HTTPException)                     │
+│ [ ] 7.14  COMMIT: "feat: REST API endpoints"                                 │
+│                                                                              │
+│ ✓ Critères de validation Phase 7:                                            │
+│   - Tous les endpoints répondent correctement                                │
+│   - La validation rejette les données invalides                              │
+│   - Les erreurs retournent du JSON structuré                                 │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 8 : APPLICATION PRINCIPALE                              [0/7] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 8.1   Créer app/main.py - structure FastAPI de base                      │
+│ [ ] 8.2   Configurer Loguru (fichiers + console + rotation)                  │
+│ [ ] 8.3   Ajouter les événements startup (init DB MySQL + scheduler)         │
+│ [ ] 8.4   Ajouter les événements shutdown (arrêt scheduler + fermeture DB)   │
+│ [ ] 8.5   Inclure le router domains                                          │
+│ [ ] 8.6   Ajouter le middleware CORS (optionnel)                             │
+│ [ ] 8.7   COMMIT: "feat: FastAPI main application"                           │
+│                                                                              │
+│ ✓ Critères de validation Phase 8:                                            │
+│   - L'application démarre avec uvicorn                                       │
+│   - /api/health retourne {"status": "healthy", "database": "connected"}      │
+│   - Les logs sont écrits dans ./logs/                                        │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 9 : TESTS                                               [0/8] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 9.1   Créer tests/__init__.py                                            │
+│ [ ] 9.2   Créer tests/conftest.py (fixtures: client, db mock, mocks)         │
+│ [ ] 9.3   Créer tests/test_dns_checker.py (3+ tests)                         │
+│ [ ] 9.4   Créer tests/test_availability.py (3+ tests)                        │
+│ [ ] 9.5   Créer tests/test_api.py - tests endpoints (5+ tests)               │
+│ [ ] 9.6   Ajouter les mocks pour DNS et Discord                              │
+│ [ ] 9.7   Vérifier que tous les tests passent                                │
+│ [ ] 9.8   COMMIT: "test: unit and integration tests"                         │
+│                                                                              │
+│ ✓ Critères de validation Phase 9:                                            │
+│   - pytest passe sans erreur                                                 │
+│   - Couverture > 70%                                                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 10 : DOCUMENTATION                                      [0/6] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 10.1  Créer README.md complet                                            │
+│ [ ] 10.2  Créer DEPLOYMENT.md (commandes VPS + accès phpMyAdmin)             │
+│ [ ] 10.3  Créer scripts/seed.py (données de test)                            │
+│ [ ] 10.4  Vérifier les docstrings dans tous les fichiers                     │
+│ [ ] 10.5  Vérifier que .gitignore exclut .env et mysql_data/                 │
+│ [ ] 10.6  COMMIT: "docs: README and deployment guide"                        │
+│                                                                              │
+│ ✓ Critères de validation Phase 10:                                           │
+│   - README contient: description, install, config, usage                     │
+│   - DEPLOYMENT contient les commandes Docker + accès phpMyAdmin              │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 11 : BUILD & VALIDATION DOCKER                          [0/7] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 11.1  Créer le fichier .env avec vraies valeurs (webhook Discord, MySQL) │
+│ [ ] 11.2  Build Docker: docker compose build                                 │
+│ [ ] 11.3  Démarrer tous les services: docker compose up -d                   │
+│ [ ] 11.4  Vérifier les logs: docker compose logs -f                          │
+│ [ ] 11.5  Vérifier phpMyAdmin: http://localhost:8083                         │
+│ [ ] 11.6  Tester les endpoints avec curl                                     │
+│ [ ] 11.7  COMMIT: "chore: Docker build validated"                            │
+│                                                                              │
+│ ✓ Critères de validation Phase 11:                                           │
+│   - Les 3 containers démarrent sans erreur                                   │
+│   - Health check passe                                                       │
+│   - phpMyAdmin montre les tables                                             │
+│   - API répond correctement                                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 12 : TESTS D'INTÉGRATION COMPLETS                       [0/5] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 12.1  Ajouter un domaine via API                                         │
+│ [ ] 12.2  Vérifier dans phpMyAdmin que le domaine est en base                │
+│ [ ] 12.3  Forcer une vérification via API                                    │
+│ [ ] 12.4  Vérifier dans phpMyAdmin que le check_log est créé                 │
+│ [ ] 12.5  COMMIT: "test: integration tests passed"                           │
+│                                                                              │
+│ ✓ Critères de validation Phase 12:                                           │
+│   - Flow complet fonctionne de bout en bout                                  │
+│   - Données visibles dans phpMyAdmin                                         │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ PHASE 13 : GIT & GITHUB                                       [0/3] ⬜       │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [ ] 13.1  Vérifier l'historique des commits (git log --oneline)              │
+│ [ ] 13.2  Créer le repository GitHub 'saas-nomdedomaine'                     │
+│ [ ] 13.3  Push final: git remote add origin + git push -u origin main        │
+│                                                                              │
+│ ✓ Critères de validation Phase 13:                                           │
+│   - Code visible sur GitHub                                                  │
+│   - Aucun fichier sensible (.env, mysql_data/) dans le repo                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+══════════════════════════════════════════════════════════════════════════════
+                              FIN DE LA CHECKLIST
+══════════════════════════════════════════════════════════════════════════════
+```
+
+---
+
+# SECTION 7 : FICHIERS README ET DEPLOYMENT
+
+## 7.1 README.md (template)
+
+```markdown
+# 🔍 Domain Monitor - SaaS Monitoring Domaines Expirés
+
+Application de surveillance de domaines expirés avec notifications Discord.
+
+## 🚀 Fonctionnalités
+
+- Surveillance automatique de domaines expirés (toutes les 2h)
+- Double vérification DNS pour éviter les faux positifs
+- Notifications Discord lors de la disponibilité
+- API REST complète pour la gestion des domaines
+- Support des extensions .fr, .com, .net
+- Interface phpMyAdmin pour administrer la base de données
+
+## 🛠️ Stack Technique
+
+- **Backend**: Python 3.12 + FastAPI
+- **Base de données**: MySQL 8.0 + phpMyAdmin
+- **Scheduler**: APScheduler
+- **DNS**: dnspython
+- **Conteneurisation**: Docker + Docker Compose
+
+## 📦 Installation
+
+### Prérequis
+
+- Docker et Docker Compose installés
+- Un webhook Discord
+
+### Déploiement
+
+1. Cloner le repository:
+```bash
+git clone https://github.com/VOTRE_USERNAME/saas-nomdedomaine.git
+cd saas-nomdedomaine
+```
+
+2. Configurer l'environnement:
+```bash
+cp .env.example .env
+nano .env  # Configurer les variables
+```
+
+3. Démarrer l'application:
+```bash
+docker compose up -d --build
+```
+
+4. Vérifier le status:
+```bash
+docker compose ps
+docker compose logs -f
+```
+
+## 🌐 Accès aux services
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| API | http://localhost:3010 | API REST FastAPI |
+| phpMyAdmin | http://localhost:8083 | Administration MySQL |
+| Docs API | http://localhost:3010/docs | Documentation Swagger |
+
+## 🔌 API Endpoints
+
+| Méthode | Endpoint | Description |
+|---------|----------|-------------|
+| GET | /api/health | Health check |
+| GET | /api/stats | Statistiques |
+| GET | /api/domains | Lister les domaines |
+| POST | /api/domains | Ajouter un domaine |
+| DELETE | /api/domains/{id} | Supprimer un domaine |
+| POST | /api/domains/{id}/check | Forcer vérification |
+
+## 📝 Exemples d'utilisation
+
+### Ajouter un domaine
+```bash
+curl -X POST http://localhost:3010/api/domains \
+  -H "Content-Type: application/json" \
+  -d '{
+    "domain": "example.fr",
+    "niche": "Tech",
+    "traffic": 5000,
+    "referring_domains": 150
+  }'
+```
+
+### Lister les domaines
+```bash
+curl http://localhost:3010/api/domains
+```
+
+## 📁 Structure du projet
+
+```
+saas-nomdedomaine/
+├── app/                 # Code applicatif
+├── tests/               # Tests unitaires
+├── scripts/             # Scripts SQL et seed
+├── logs/                # Fichiers de logs
+├── docker/              # Dockerfile
+└── docker-compose.yml
+```
+
+## 📄 License
+
+MIT
+```
+
+## 7.2 DEPLOYMENT.md (template)
+
+```markdown
+# 🚀 Guide de Déploiement - Domain Monitor
+
+## Connexion VPS
+
+```bash
+ssh ubuntu@37.59.125.246
+```
+
+## Emplacement du projet
+
+```bash
+cd ~/saas-nomdedomaine
+```
+
+---
+
+## Services et Ports
+
+| Service | Port | URL |
+|---------|------|-----|
+| Application FastAPI | 3010 | http://localhost:3010 |
+| phpMyAdmin | 8083 | http://localhost:8083 |
+| MySQL | 3307 | (interne Docker) |
+
+---
+
+## Commandes Docker
+
+### Voir l'état des containers
+```bash
+docker compose ps
+```
+
+### Voir les logs en temps réel
+```bash
+docker compose logs -f
+```
+
+### Logs d'un service spécifique
+```bash
+docker compose logs -f app          # Application FastAPI
+docker compose logs -f mysql        # Base de données
+docker compose logs -f phpmyadmin   # phpMyAdmin
+```
+
+### Redémarrer tous les services
+```bash
+docker compose restart
+```
+
+### Redémarrer un service spécifique
+```bash
+docker compose restart app
+```
+
+### Arrêter tous les services
+```bash
+docker compose down
+```
+
+### Démarrer tous les services
+```bash
+docker compose up -d
+```
+
+### Rebuild après modification du code
+```bash
+git pull origin main
+docker compose up -d --build
+```
+
+---
+
+## Accès phpMyAdmin
+
+- **URL**: http://localhost:8083 (ou http://IP_VPS:8083)
+- **Serveur**: mysql
+- **Utilisateur**: root
+- **Mot de passe**: (valeur de MYSQL_ROOT_PASSWORD dans .env)
+
+---
+
+## Commandes API
+
+### Health check
+```bash
+curl http://localhost:3010/api/health
+```
+
+### Statistiques
+```bash
+curl http://localhost:3010/api/stats
+```
+
+### Lister les domaines
+```bash
+curl http://localhost:3010/api/domains
+```
+
+### Ajouter un domaine
+```bash
+curl -X POST http://localhost:3010/api/domains \
+  -H "Content-Type: application/json" \
+  -d '{"domain": "example.fr", "niche": "Tech", "traffic": 5000, "referring_domains": 150}'
+```
+
+### Forcer une vérification
+```bash
+curl -X POST http://localhost:3010/api/domains/1/check
+```
+
+---
+
+## Accès MySQL en ligne de commande
+
+```bash
+docker compose exec mysql mysql -u root -p domain_monitor
+```
+
+### Requêtes utiles
+
+```sql
+-- Voir tous les domaines
+SELECT * FROM domains;
+
+-- Voir les domaines disponibles
+SELECT * FROM domains WHERE status = 'available';
+
+-- Voir les dernières vérifications
+SELECT * FROM check_logs ORDER BY checked_at DESC LIMIT 20;
+
+-- Voir les notifications envoyées
+SELECT * FROM notifications ORDER BY sent_at DESC LIMIT 20;
+
+-- Compter les domaines par status
+SELECT status, COUNT(*) FROM domains GROUP BY status;
+```
+
+---
+
+## Dépannage
+
+### Voir les derniers logs d'erreur
+```bash
+docker compose logs --tail=100 app
+```
+
+### Vérifier la connexion MySQL
+```bash
+docker compose exec mysql mysqladmin ping -h localhost -u root -p
+```
+
+### Accéder au container app
+```bash
+docker compose exec app bash
+```
+
+### Redémarrage complet (avec suppression des volumes)
+```bash
+docker compose down -v
+docker compose up -d --build
+```
+
+⚠️ **Attention**: `docker compose down -v` supprime les données MySQL !
+
+---
+
+## Backup de la base de données
+
+### Créer un backup
+```bash
+docker compose exec mysql mysqldump -u root -p domain_monitor > backup_$(date +%Y%m%d).sql
+```
+
+### Restaurer un backup
+```bash
+docker compose exec -T mysql mysql -u root -p domain_monitor < backup_20250119.sql
+```
+
+---
+
+## Fichiers importants
+
+| Fichier | Description |
+|---------|-------------|
+| `.env` | Configuration (ne pas commiter) |
+| `logs/app.log` | Logs application |
+| `scripts/init.sql` | Script d'initialisation MySQL |
+```
+
+---
+
+# SECTION 8 : INSTRUCTIONS FINALES
+
+## Résumé des règles de travail
+
+1. **Exécuter chaque tâche dans l'ordre** de la checklist
+2. **Après chaque sous-tâche**, afficher la checklist mise à jour avec le pourcentage
+3. **Tester chaque composant** avant de passer au suivant
+4. **Faire un commit Git** à la fin de chaque phase
+5. **Ne jamais sauter d'étape** même si elle semble triviale
+6. **En cas d'erreur**, corriger avant de continuer
+
+## Récapitulatif des ports
+
+| Service | Port |
+|---------|------|
+| Application FastAPI | 3010 |
+| phpMyAdmin | 8083 |
+| MySQL (interne Docker) | 3307 |
+
+## Commande de démarrage
+
+Commence maintenant par la **Phase 1, Tâche 1.1** : Créer le dossier racine 'saas-nomdedomaine'.
+
+Après chaque tâche, montre-moi la checklist mise à jour.
+
+---
+
+**🚀 DÉBUT DU DÉVELOPPEMENT - PHASE 1, TÂCHE 1.1**

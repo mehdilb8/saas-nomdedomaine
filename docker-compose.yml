@@ -1,0 +1,109 @@
+version: '3.8'
+
+services:
+  # ================================
+  # APPLICATION FASTAPI
+  # ================================
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: domain-monitor-app
+    restart: unless-stopped
+    ports:
+      - "3010:3010"
+    volumes:
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - TZ=Europe/Paris
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3010/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - domain-monitor-network
+
+  # ================================
+  # BASE DE DONNÉES MYSQL
+  # ================================
+  mysql:
+    image: mysql:8.0
+    container_name: domain-monitor-mysql
+    restart: unless-stopped
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Europe/Paris
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --event-scheduler=ON
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - domain-monitor-network
+
+  # ================================
+  # PHPMYADMIN
+  # ================================
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: domain-monitor-phpmyadmin
+    restart: unless-stopped
+    ports:
+      - "8083:80"
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+      PMA_USER: root
+      PMA_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      UPLOAD_LIMIT: 50M
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - domain-monitor-network
+
+# ================================
+# VOLUMES
+# ================================
+volumes:
+  mysql_data:
+    name: domain-monitor-mysql-data
+
+# ================================
+# NETWORKS
+# ================================
+networks:
+  domain-monitor-network:
+    name: domain-monitor-network
+    driver: bridge
