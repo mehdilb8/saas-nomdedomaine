@@ -7,7 +7,16 @@
       "Bash(docker compose up:*)",
       "Bash(git remote add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(ssh ubuntu@37.59.125.246 \"docker --version 2>/dev/null || echo ''Docker not installed''\")",
+      "Bash(ssh ubuntu@37.59.125.246 \"cd ~ && git clone https://github.com/mehdilb8/saas-nomdedomaine.git && echo ''Repository cloned successfully''\")",
+      "Bash(ssh ubuntu@37.59.125.246 \"cd ~ && git clone https://github.com/mehdilb8/saas-nomdedomaine.git 2>&1\")",
+      "Bash(ssh ubuntu@37.59.125.246 \"cd ~ && git clone https://github.com/mehdilb8/saas-nomdedomaine.git && echo ''✅ Repository cloned successfully''\")",
+      "Bash(ssh ubuntu@37.59.125.246 \"cd ~/saas-nomdedomaine && cp .env.example .env && echo ''✅ .env file created''\")",
+      "Bash(ssh ubuntu@37.59.125.246 \"sudo lsof -i :3307 || sudo netstat -tulpn | grep 3307\")",
+      "Bash(ssh:*)",
+      "Bash(docker compose:*)",
+      "Bash(scp:*)"
     ]
   }
 }

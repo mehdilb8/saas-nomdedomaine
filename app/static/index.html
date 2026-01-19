@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Domain Monitor - Gestion des Domaines</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🔍 Domain Monitor</h1>
+                <p class="subtitle">Surveillance des domaines expirés</p>
+            </div>
+            <div class="stats-bar" id="statsBar">
+                <div class="stat-item">
+                    <span class="stat-label">Total</span>
+                    <span class="stat-value" id="totalDomains">-</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Disponibles</span>
+                    <span class="stat-value stat-success" id="availableDomains">-</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Watchers</span>
+                    <span class="stat-value stat-info" id="activeWatchers">-</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">Vérifications</span>
+                    <span class="stat-value" id="totalChecks">-</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Add Domain Form -->
+        <div class="card">
+            <h2>➕ Ajouter un domaine</h2>
+            <form id="addDomainForm" class="form">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="domain">Nom de domaine *</label>
+                        <input type="text" id="domain" name="domain" placeholder="exemple.fr" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="niche">Niche</label>
+                        <input type="text" id="niche" name="niche" placeholder="Tech, Finance, etc.">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="traffic">Trafic mensuel</label>
+                        <input type="number" id="traffic" name="traffic" placeholder="1000" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label for="referring_domains">Domaines référents</label>
+                        <input type="number" id="referring_domains" name="referring_domains" placeholder="50" min="0">
+                    </div>
+                </div>
+                <button type="submit" class="btn btn-primary">Ajouter le domaine</button>
+            </form>
+        </div>
+
+        <!-- Filters -->
+        <div class="card">
+            <div class="filters">
+                <div class="filter-group">
+                    <label for="filterStatus">Statut:</label>
+                    <select id="filterStatus">
+                        <option value="">Tous</option>
+                        <option value="available">Disponible</option>
+                        <option value="unavailable">Indisponible</option>
+                        <option value="unknown">Inconnu</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="filterMonitoring">Surveillance:</label>
+                    <select id="filterMonitoring">
+                        <option value="">Tous</option>
+                        <option value="true">Active</option>
+                        <option value="false">Inactive</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="searchDomain">Rechercher:</label>
+                    <input type="text" id="searchDomain" placeholder="Nom de domaine...">
+                </div>
+                <button class="btn btn-secondary" onclick="loadDomains()">🔄 Actualiser</button>
+            </div>
+        </div>
+
+        <!-- Domains List -->
+        <div class="card">
+            <h2>📋 Liste des domaines</h2>
+            <div id="loadingSpinner" class="loading">Chargement...</div>
+            <div id="domainsContainer"></div>
+        </div>
+
+        <!-- Edit Modal -->
+        <div id="editModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>✏️ Modifier le domaine</h2>
+                    <span class="close" onclick="closeEditModal()">&times;</span>
+                </div>
+                <form id="editDomainForm" class="form">
+                    <input type="hidden" id="editDomainId">
+                    <div class="form-group">
+                        <label for="editDomain">Nom de domaine</label>
+                        <input type="text" id="editDomain" disabled>
+                    </div>
+                    <div class="form-group">
+                        <label for="editNiche">Niche</label>
+                        <input type="text" id="editNiche" name="niche">
+                    </div>
+                    <div class="form-group">
+                        <label for="editTraffic">Trafic mensuel</label>
+                        <input type="number" id="editTraffic" name="traffic" min="0">
+                    </div>
+                    <div class="form-group">
+                        <label for="editReferringDomains">Domaines référents</label>
+                        <input type="number" id="editReferringDomains" name="referring_domains" min="0">
+                    </div>
+                    <div class="modal-actions">
+                        <button type="button" class="btn btn-secondary" onclick="closeEditModal()">Annuler</button>
+                        <button type="submit" class="btn btn-primary">Enregistrer</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Toast Notifications -->
+        <div id="toastContainer"></div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
