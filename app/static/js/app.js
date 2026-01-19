@@ -80,7 +80,7 @@ async function loadDomains() {
         const response = await fetch(`${API_URL}/domains?${params}`);
         const data = await response.json();
 
-        currentDomains = data.items || [];
+        currentDomains = data.domains || [];
 
         loading.style.display = 'none';
 

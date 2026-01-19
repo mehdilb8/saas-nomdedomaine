@@ -16,7 +16,8 @@
       "Bash(ssh ubuntu@37.59.125.246 \"sudo lsof -i :3307 || sudo netstat -tulpn | grep 3307\")",
       "Bash(ssh:*)",
       "Bash(docker compose:*)",
-      "Bash(scp:*)"
+      "Bash(scp:*)",
+      "Bash(curl:*)"
     ]
   }
 }
